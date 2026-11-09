@@ -13,6 +13,9 @@
 #include "httpio.h"                     /* plog() */
 #include "memstat.h"
 #include "audiofx.h"
+#ifdef HAVE_TLS
+#include "mbedtls/aes.h"
+#endif
 #include <psp2/kernel/threadmgr.h>
 #include <psp2/kernel/processmgr.h>
 #include <psp2/kernel/sysmem.h>
@@ -3580,6 +3583,57 @@ static void alt_fill(Tsp *t, AltAudio *A, int64_t until_ms, uint8_t *buf)
     }
 }
 
+/* HLS AES-128 (RFC 8216): whole MPEG-TS segments use CBC with PKCS#7 padding.
+ * Keep a bounded buffer: encrypted bytes must not reach the TS demuxer. */
+#define HLS_AES_SEG_CAP (8 * 1024 * 1024)
+static int hls_aes_segment(Tsp *t, const HlsSegment *g, const char *base,
+                           const char *seg_url, uint8_t *buf, int *status)
+{
+#ifndef HAVE_TLS
+    (void)t; (void)g; (void)base; (void)seg_url; (void)buf; (void)status;
+    return -3;
+#else
+    if (!g->key_uri || g->key_uri_len <= 0) return -3;
+    char key_url[HLS_URL_MAX];
+    hls_resolve(base, g->key_uri, g->key_uri_len, key_url, sizeof key_url);
+    char key_data[17] = {0};
+    int ks = 0;
+    int kn = hls_get(t, key_url, key_data, sizeof key_data, buf, &ks);
+    if (kn != 16 || ks >= 400) { *status = ks; return -4; }
+    uint8_t *cipher = malloc(HLS_AES_SEG_CAP + 1);
+    if (!cipher) return -5;
+    int n = hls_get(t, seg_url, (char *)cipher, HLS_AES_SEG_CAP + 1, buf, status);
+    if (n <= 0 || *status >= 400 || n % 16 != 0 || n >= HLS_AES_SEG_CAP) { free(cipher); return -6; }
+    uint8_t iv[16] = {0};
+    if (g->has_iv) memcpy(iv, g->iv, 16);
+    else {
+        uint64_t seq = (uint64_t)g->seq;
+        for (int j = 15; j >= 8; j--) { iv[j] = (uint8_t)seq; seq >>= 8; }
+    }
+    mbedtls_aes_context aes;
+    mbedtls_aes_init(&aes);
+    int rc = mbedtls_aes_setkey_dec(&aes, (const unsigned char *)key_data, 128);
+    if (!rc) rc = mbedtls_aes_crypt_cbc(&aes, MBEDTLS_AES_DECRYPT, (size_t)n, iv, cipher, cipher);
+    mbedtls_aes_free(&aes);
+    memset(key_data, 0, sizeof key_data);
+    if (rc) { free(cipher); return -7; }
+    int pad = cipher[n - 1];
+    if (pad < 1 || pad > 16) { free(cipher); return -8; }
+    for (int j = 0; j < pad; j++) if (cipher[n - 1 - j] != pad) { free(cipher); return -8; }
+    size_t plain = (size_t)n - (size_t)pad;
+    if (plain && cipher[0] != 0x47) { free(cipher); return -9; }
+    t->st.bytes += (uint32_t)plain;
+    for (size_t off = 0; off < plain && !stopping(t); off += CHUNK) {
+        size_t take = plain - off < CHUNK ? plain - off : CHUNK;
+        dmx_feed(t, cipher + off, take);
+        stats_tick(t);
+        check_stall(t);
+    }
+    free(cipher);
+    return n;
+#endif
+}
+
 /* HLS: playlists are read with sceHttp; the MPEG-TS segments go into the demuxer one after the other.
  * Live playlists start three segments from the end and are read again while playing. */
 static void read_hls(Tsp *t, uint8_t *buf)
@@ -3660,7 +3714,7 @@ static void read_hls(Tsp *t, uint8_t *buf)
     for (;;) {
         HlsMedia m;
         if (hls_parse_media(text, &m) < 0) { set_error_kind(t, TSP_ERRK_FORMAT, "HLS playlist without segments"); goto out; }
-        if (m.encrypted) { hls_media_free(&m); set_error_kind(t, TSP_ERRK_FORMAT, m.encrypted == 1 ? "HLS AES-128 encryption: decryption not implemented" : "HLS DRM/SAMPLE-AES: not supported"); goto out; }
+        if (m.encrypted == 2) { hls_media_free(&m); set_error_kind(t, TSP_ERRK_FORMAT, "HLS DRM/SAMPLE-AES: not supported"); goto out; }
         if (m.fmp4 || (m.nseg && seg_is_mp4(m.seg[0].uri, m.seg[0].uri_len))) {
             hls_media_free(&m);
             set_error_kind(t, TSP_ERRK_FORMAT, "HLS with MP4 segments: not supported (MPEG-TS only)");
@@ -3693,12 +3747,12 @@ static void read_hls(Tsp *t, uint8_t *buf)
             v_ms += g->duration_ms;
             uint64_t g0 = now_us(), gw0 = t->push_wait_us;
             uint32_t gb0 = t->st.bytes;
-            int status = 0, r = hls_get(t, seg_url, NULL, 0, buf, &status);
+            int status = 0, r = g->encryption == 1 ? hls_aes_segment(t, g, base, seg_url, buf, &status) : hls_get(t, seg_url, NULL, 0, buf, &status);
             if (r >= 0 && status < 400) hls_speed(t, now_us() - g0 - (t->push_wait_us - gw0), t->st.bytes - gb0, g->duration_ms);
-            if (r < 0 && !stopping(t) && wait_for_network(t)) { last_new = now_us(); r = hls_get(t, seg_url, NULL, 0, buf, &status); }
+            if (r < 0 && !stopping(t) && wait_for_network(t)) { last_new = now_us(); r = g->encryption == 1 ? hls_aes_segment(t, g, base, seg_url, buf, &status) : hls_get(t, seg_url, NULL, 0, buf, &status); }
             if ((r < 0 || status >= 400) && !stopping(t)) {      /* once more, then skip it */
                 hls_wait(t, 300);
-                r = hls_get(t, seg_url, NULL, 0, buf, &status);
+                r = g->encryption == 1 ? hls_aes_segment(t, g, base, seg_url, buf, &status) : hls_get(t, seg_url, NULL, 0, buf, &status);
             }
             if (stopping(t)) break;
             if (r < 0 || status >= 400) {
