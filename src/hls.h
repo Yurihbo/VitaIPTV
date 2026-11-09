@@ -39,7 +39,7 @@ typedef struct {
     int target_ms;                      /* #EXT-X-TARGETDURATION */
     int64_t first_seq;                  /* #EXT-X-MEDIA-SEQUENCE */
     int endlist;                        /* VOD / finished event */
-    int encrypted;                      /* #EXT-X-KEY with a METHOD other than NONE */
+    int encrypted;                      /* 0 none, 1 AES-128, 2 other encrypted method */
     int fmp4;                           /* #EXT-X-MAP: fragmented MP4 segments */
     int nseg;
     HlsSegment *seg;                    /* malloc'd, free with hls_media_free */
