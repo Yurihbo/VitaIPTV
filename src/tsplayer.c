@@ -3660,7 +3660,7 @@ static void read_hls(Tsp *t, uint8_t *buf)
     for (;;) {
         HlsMedia m;
         if (hls_parse_media(text, &m) < 0) { set_error_kind(t, TSP_ERRK_FORMAT, "HLS playlist without segments"); goto out; }
-        if (m.encrypted) { hls_media_free(&m); set_error_kind(t, TSP_ERRK_FORMAT, "Encrypted HLS stream (AES): not supported"); goto out; }
+        if (m.encrypted) { hls_media_free(&m); set_error_kind(t, TSP_ERRK_FORMAT, m.encrypted == 1 ? "HLS AES-128 encryption: decryption not implemented" : "HLS DRM/SAMPLE-AES: not supported"); goto out; }
         if (m.fmp4 || (m.nseg && seg_is_mp4(m.seg[0].uri, m.seg[0].uri_len))) {
             hls_media_free(&m);
             set_error_kind(t, TSP_ERRK_FORMAT, "HLS with MP4 segments: not supported (MPEG-TS only)");
