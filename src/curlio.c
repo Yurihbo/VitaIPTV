@@ -441,7 +441,7 @@ void cio_init(void)
 
 int cio_get(const CioRequest *rq, int *status, char *err, size_t errsz)
 {
-    char url[HLS_URL_MAX], host[256], req[4096], auth[400], enc[560], val[HLS_URL_MAX];
+    char url[HLS_URL_MAX], host[256], req[HLS_URL_MAX + 2048], auth[400], enc[560], val[HLS_URL_MAX];
     const char *path;
     int tls, port, ret = -1;
     char e2[1];
