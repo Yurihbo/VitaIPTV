@@ -33,6 +33,11 @@ typedef struct {
     const char *uri;                    /* points into the playlist text, not terminated */
     int uri_len;
     int discontinuity;                  /* a #EXT-X-DISCONTINUITY comes before it */
+    int encryption;                     /* 0 none, 1 AES-128, 2 unsupported */
+    const char *key_uri;                /* points into playlist text */
+    int key_uri_len;
+    uint8_t iv[16];
+    int has_iv;
 } HlsSegment;
 
 typedef struct {
