@@ -134,7 +134,7 @@ typedef struct {
 } Slot;
 
 typedef struct {
-    char url[512];
+    char url[HLS_URL_MAX];
     char hdr_ua[512], hdr_ref[512];     /* from link|User-Agent=...&Referer=... (M3U #EXTVLCOPT): "" = default */
     volatile int cancel;
     SceUID thread, vthread, athread, lock, qlock;
