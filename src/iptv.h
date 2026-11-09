@@ -5,7 +5,7 @@
 
 #define IPTV_NAME_MAX     96
 #define IPTV_GROUP_MAX    48
-#define IPTV_URL_MAX      512
+#define IPTV_URL_MAX      4096
 #define IPTV_CRED_MAX     256                /* also holds a user agent (single streams) */
 #define IPTV_MAX_CHANNELS 30000
 
