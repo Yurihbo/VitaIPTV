@@ -4,7 +4,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define HLS_URL_MAX 1024
+#define HLS_URL_MAX 4096
 
 typedef struct {
     char uri[HLS_URL_MAX];              /* absolute */
