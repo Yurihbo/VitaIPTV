@@ -65,6 +65,34 @@ static int attr(const char *s, const char *e, const char *name, char *out, size_
     return 0;
 }
 
+/* Return an attribute's raw value span, preserving its location in playlist text. */
+static int attr_span(const char *s, const char *e, const char *name, const char **value, int *len)
+{
+    size_t n = strlen(name);
+    const char *p = s;
+    while (p < e) {
+        while (p < e && (*p == ',' || *p == ' ' || *p == ':')) p++;
+        const char *k = p;
+        while (p < e && *p != '=' && *p != ',') p++;
+        if (p >= e || *p != '=') { while (p < e && *p != ',') p++; continue; }
+        int match = (size_t)(p - k) == n && !strncasecmp(k, name, n);
+        p++;
+        const char *v = p, *ve;
+        if (p < e && *p == '"') { v = ++p; while (p < e && *p != '"') p++; ve = p; if (p < e) p++; }
+        else { while (p < e && *p != ',') p++; ve = p; }
+        if (match) { *value = v; *len = (int)(ve - v); return 1; }
+    }
+    return 0;
+}
+
+static int hex_digit(char c)
+{
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+}
+
 void hls_resolve(const char *base, const char *ref, int ref_len, char *out, size_t cap)
 {
     char r[HLS_URL_MAX];
@@ -301,6 +329,9 @@ int hls_parse_media(const char *text, HlsMedia *m)
     const char *p = text, *s, *e;
     int cap = 0, dur_ms = 0, disc = 0, have_inf = 0;
     int64_t seq = -1;
+    const char *key_uri = NULL;
+    int key_uri_len = 0, has_iv = 0;
+    uint8_t iv[16] = {0};
     while (next_line(&p, &s, &e)) {
         if (s == e) continue;
         if (*s == '#') {
@@ -315,6 +346,22 @@ int hls_parse_media(const char *text, HlsMedia *m)
                     if (!strcasecmp(val, "NONE")) m->encrypted = 0;
                     else if (!strcasecmp(val, "AES-128")) m->encrypted = 1;
                     else m->encrypted = 2;
+                    key_uri = NULL; key_uri_len = 0; has_iv = 0;
+                    if (m->encrypted == 1) {
+                        attr_span(s + 11, e, "URI", &key_uri, &key_uri_len);
+                        const char *v = NULL; int vl = 0;
+                        if (attr_span(s + 11, e, "IV", &v, &vl)) {
+                            if (vl == 34 && v[0] == '0' && (v[1] == 'x' || v[1] == 'X')) { v += 2; vl -= 2; }
+                            if (vl == 32) {
+                                has_iv = 1;
+                                for (int j = 0; j < 16; j++) {
+                                    int hi = hex_digit(v[j * 2]), lo = hex_digit(v[j * 2 + 1]);
+                                    if (hi < 0 || lo < 0) { has_iv = 0; break; }
+                                    iv[j] = (uint8_t)((hi << 4) | lo);
+                                }
+                            }
+                        }
+                    }
                 }
             } else if (starts(s, e, "#EXTINF:")) { dur_ms = (int)(atof(s + 8) * 1000); have_inf = 1; }
             continue;
@@ -335,6 +382,11 @@ int hls_parse_media(const char *text, HlsMedia *m)
         g->uri = s;
         g->uri_len = (int)(e - s);
         g->discontinuity = disc;
+        g->encryption = m->encrypted;
+        g->key_uri = key_uri;
+        g->key_uri_len = key_uri_len;
+        g->has_iv = has_iv;
+        memcpy(g->iv, iv, sizeof iv);
         disc = 0;
         have_inf = 0;
     }
